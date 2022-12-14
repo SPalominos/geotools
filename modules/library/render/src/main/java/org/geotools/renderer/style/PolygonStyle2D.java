@@ -31,6 +31,7 @@ import org.geotools.util.Classes;
 public class PolygonStyle2D extends LineStyle2D {
     protected Paint fill;
     protected Style2D graphicFill;
+    protected Style2D customFill;
     protected Composite fillComposite;
 
     /**
@@ -85,6 +86,14 @@ public class PolygonStyle2D extends LineStyle2D {
      */
     public void setFillComposite(Composite fillComposite) {
         this.fillComposite = fillComposite;
+    }
+
+    public Style2D getCustomFill() {
+        return customFill;
+    }
+
+    public void setCustomFill(Style2D customFill) {
+        this.customFill = customFill;
     }
 
     /** Returns a string representation of this style. */

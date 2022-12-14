@@ -99,6 +99,13 @@ public class PolygonSymbolizerImpl extends AbstractSymbolizer
         if (this.fill == fill) {
             return;
         }
+
+        this.fill = HatchedFill.cast(fill);
+        if (this.fill != null) return;
+
+        this.fill = DotMapFill.cast(fill);
+        if (this.fill != null) return;
+
         this.fill = FillImpl.cast(fill);
     }
 

@@ -26,13 +26,11 @@ import java.awt.RenderingHints.Key;
 import java.awt.Shape;
 import java.awt.Stroke;
 import java.awt.TexturePaint;
-import java.awt.geom.AffineTransform;
-import java.awt.geom.PathIterator;
-import java.awt.geom.Point2D;
-import java.awt.geom.Rectangle2D;
+import java.awt.geom.*;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.util.Iterator;
+import java.util.Random;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.swing.Icon;
@@ -40,13 +38,7 @@ import org.geotools.geometry.jts.Decimator;
 import org.geotools.geometry.jts.LiteShape2;
 import org.geotools.image.io.ImageIOExt;
 import org.geotools.referencing.operation.transform.AffineTransform2D;
-import org.geotools.renderer.style.GraphicStyle2D;
-import org.geotools.renderer.style.IconStyle2D;
-import org.geotools.renderer.style.LineStyle2D;
-import org.geotools.renderer.style.MarkStyle2D;
-import org.geotools.renderer.style.PointStyle2D;
-import org.geotools.renderer.style.PolygonStyle2D;
-import org.geotools.renderer.style.Style2D;
+import org.geotools.renderer.style.*;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.GeometryFactory;
@@ -284,6 +276,13 @@ public class StyledShapePainter {
                         graphics.setClip(oldClip);
                     }
                 }
+                if (ps2d.getCustomFill() != null) {
+                    if (ps2d.getCustomFill() instanceof HatchedStyle2D) {
+                        paintHatchedFill(graphics, shape, (HatchedStyle2D) ps2d.getCustomFill());
+                    } else if (ps2d.getCustomFill() instanceof DotMapStyle2D) {
+                        paintDotMapFill(graphics, shape, (DotMapStyle2D) ps2d.getCustomFill());
+                    }
+                }
             }
 
             if (style instanceof LineStyle2D) {
@@ -291,6 +290,252 @@ public class StyledShapePainter {
                 paintLineStyle(graphics, shape, ls2d, isLabelObstacle, 0.5f);
             }
         }
+    }
+
+    private void paintDotMapFill(Graphics2D g2, LiteShape2 shape, DotMapStyle2D dotMap) {}
+
+    private Point2D.Double findMarkPosition(Area area, Random rand) {
+        Rectangle2D bounds2D = area.getBounds2D();
+
+        for (int i = 0; i < 100; i++) {
+            double x = rand.nextDouble() * bounds2D.getWidth() + bounds2D.getMinX();
+            double y = rand.nextDouble() * bounds2D.getHeight() + bounds2D.getMinY();
+
+            if (area.contains(x, y)) {
+                return new Point2D.Double(x, y);
+            }
+        }
+        return null;
+    }
+
+    private void paintHatchedFill(Graphics2D g2, LiteShape2 shape, HatchedStyle2D hatched) {
+        double alpha = hatched.getAngle();
+        while (alpha < 0.0) {
+            alpha += 360;
+        } // Make sure alpha is > 0
+        while (alpha > 360) {
+            alpha -= 360;
+        } // and < 360.0
+        alpha = alpha * Math.PI / 180; // and finally convert in radian
+        double beta = Math.PI / 2.0 + alpha;
+        double hOffset = hatched.getPerpendicularOffset();
+        double deltaOx = Math.cos(beta) * hOffset;
+        double deltaOy = Math.sin(beta) * hOffset;
+        /*Double naturalLength = penStrokeDrawer.getNaturalLength(penStroke, mt);
+        if (naturalLength.isInfinite()) {
+            naturalLength = DEFAULT_NATURAL_LENGTH;
+        }*/
+        double naturalLength = 100;
+
+        // the first hatch to generate is the reference one : it crosses the reference point
+        Point2D.Double geoRef = new Point2D.Double(0, 0);
+        // Map geo ref point within g2 space
+        Point2D ref = geoRef; // mt.getAffineTransform().transform(geoRef, null);
+        // Apply hatch offset to ref point
+        ref.setLocation(ref.getX() + deltaOx, ref.getY() + deltaOy);
+
+        // Compute some var
+        double cosAlpha = Math.cos(alpha);
+        double sinAlpha = Math.sin(alpha);
+
+        double EPSILON = 0.01;
+
+        if (Math.abs(sinAlpha) < EPSILON) {
+            sinAlpha = 0.0;
+        }
+
+        boolean vertical = false;
+
+        if (Math.abs(cosAlpha) < EPSILON) {
+            cosAlpha = 0.0;
+            vertical = true;
+        }
+
+        double deltaHx = cosAlpha * naturalLength;
+        double deltaHy = sinAlpha * naturalLength;
+
+        double pDist = hatched.getDistance();
+        double deltaDx = pDist / sinAlpha;
+        double deltaDy = pDist / cosAlpha;
+
+        Rectangle2D fbox = shape.getBounds2D();
+
+        /* the following block compute the number of times the hatching pattern shall be drawn */
+        int nb2start; // how many pattern to skip from the ref point to the begining of the shape ?
+        int nb2end; // how many pattern to skip from the ref point to the end of the shape ?
+
+        if (vertical) {
+            if (deltaDx >= 0.0) {
+                nb2start = (int) Math.ceil((fbox.getMinX() - ref.getX()) / deltaDx);
+                nb2end = (int) Math.floor(((fbox.getMaxX() - ref.getX()) / deltaDx));
+            } else {
+                nb2start = (int) Math.floor((fbox.getMinX() - ref.getX()) / deltaDx);
+                nb2end = (int) Math.ceil(((fbox.getMaxX() - ref.getX()) / deltaDx));
+            }
+        } else {
+            if (cosAlpha < 0) {
+                nb2start = (int) Math.ceil((fbox.getMinX() - ref.getX()) / deltaHx);
+                nb2end = (int) Math.floor(((fbox.getMaxX() - ref.getX()) / deltaHx));
+            } else {
+                nb2start = (int) Math.floor((fbox.getMinX() - ref.getX()) / deltaHx);
+                nb2end = (int) Math.ceil(((fbox.getMaxX() - ref.getX()) / deltaHx));
+            }
+        }
+
+        int nb2draw = nb2end - nb2start;
+
+        double ref_yXmin;
+        double ref_yXmax;
+
+        double cos_sin = cosAlpha * sinAlpha;
+
+        ref_yXmin = ref.getY() + nb2start * deltaHy;
+        ref_yXmax = ref.getY() + nb2end * deltaHy;
+
+        double hxmin;
+        double hxmax;
+        if (vertical) {
+            hxmin = nb2start * deltaDx + ref.getX();
+            hxmax = nb2end * deltaDx + ref.getX();
+        } else {
+            hxmin = nb2start * deltaHx + ref.getX();
+            hxmax = nb2end * deltaHx + ref.getX();
+        }
+
+        double hymin;
+        double hymax;
+        double nb2drawDeltaY = nb2draw * deltaHy;
+
+        // Compute hatches sub-set to draw (avoid all pattern which not stands within the clip
+        // area...)
+        if (vertical) {
+            if (deltaHy < 0.0) {
+                hymin = Math.ceil((fbox.getMinY() - ref.getY()) / deltaHy) * deltaHy + ref.getY();
+                hymax = Math.floor((fbox.getMaxY() - ref.getY()) / deltaHy) * deltaHy + ref.getY();
+            } else {
+                hymin = Math.floor((fbox.getMinY() - ref.getY()) / deltaHy) * deltaHy + ref.getY();
+                hymax = Math.ceil((fbox.getMaxY() - ref.getY()) / deltaHy) * deltaHy + ref.getY();
+            }
+        } else {
+            if (cos_sin < 0) {
+                hymin = Math.floor((fbox.getMinY() - ref_yXmin) / (deltaDy)) * deltaDy + ref_yXmin;
+                hymax =
+                        Math.ceil((fbox.getMaxY() - ref_yXmax) / (deltaDy)) * deltaDy
+                                + ref_yXmax
+                                - nb2drawDeltaY;
+            } else {
+                hymin =
+                        Math.floor((fbox.getMinY() - nb2drawDeltaY - ref_yXmin) / (deltaDy))
+                                        * deltaDy
+                                + ref_yXmin;
+
+                if (deltaDy < 0) {
+                    hymax =
+                            Math.floor((fbox.getMaxY() + nb2drawDeltaY - ref_yXmax) / (deltaDy))
+                                            * deltaDy
+                                    + ref_yXmax
+                                    - nb2drawDeltaY;
+                } else {
+                    hymax =
+                            Math.ceil((fbox.getMaxY() + nb2drawDeltaY - ref_yXmax) / (deltaDy))
+                                            * deltaDy
+                                    + ref_yXmax
+                                    - nb2drawDeltaY;
+                }
+            }
+        }
+
+        double y;
+        double x;
+
+        Line2D.Double l = new Line2D.Double();
+
+        // Inform graphic2g to only draw hatches within the shape !
+        g2.clip(shape);
+
+        if (vertical) {
+
+            if (hxmin < hxmax) {
+                if (deltaDx < 0) {
+                    deltaDx *= -1;
+                }
+                for (x = hxmin; x < hxmax + deltaDx / 2.0; x += deltaDx) {
+                    if (sinAlpha > 0) {
+                        l.x1 = x;
+                        l.y1 = hymin;
+                        l.x2 = x;
+                        l.y2 = hymax;
+                    } else {
+                        l.x1 = x;
+                        l.y1 = hymax;
+                        l.x2 = x;
+                        l.y2 = hymin;
+                    }
+                    g2.setPaint(hatched.getColor());
+                    g2.setStroke(hatched.getStroke());
+                    g2.draw(l);
+                }
+            } else {
+
+                // Seems to been unreachable !
+                for (x = hxmin; x > hxmax - deltaDx / 2.0; x += deltaDx) {
+                    l.x1 = x;
+                    l.y1 = hymin;
+                    l.x2 = x;
+                    l.y2 = hymax;
+                    g2.setPaint(hatched.getColor());
+                    g2.setStroke(hatched.getStroke());
+                    g2.draw(l);
+                }
+            }
+        } else {
+            if (hymin < hymax) {
+                if (deltaDy < 0.0) {
+                    deltaDy *= -1;
+                }
+                for (y = hymin; y < hymax + deltaDy / 2.0; y += deltaDy) {
+                    if (cosAlpha > 0) {
+                        // Line goes from the left to the right
+                        l.x1 = hxmin;
+                        l.y1 = y;
+                        l.x2 = hxmax;
+                        l.y2 = y + nb2draw * deltaHy;
+                    } else {
+                        // Line goes from the right to the left
+                        l.x1 = hxmax;
+                        l.y1 = y + nb2draw * deltaHy;
+                        l.x2 = hxmin;
+                        l.y2 = y;
+                    }
+                    g2.setPaint(hatched.getColor());
+                    g2.setStroke(hatched.getStroke());
+                    g2.draw(l);
+                }
+            } else {
+                if (deltaDy > 0.0) {
+                    deltaDy *= -1;
+                }
+                for (y = hymin; y > hymax - deltaDy / 2.0; y += deltaDy) {
+                    if (cosAlpha > 0) {
+                        // Line goes from the left to the right
+                        l.x1 = hxmin;
+                        l.y1 = y;
+                        l.x2 = hxmax;
+                        l.y2 = y + nb2draw * deltaHy;
+                    } else {
+                        // Line goes from the right to the left
+                        l.x1 = hxmax;
+                        l.y1 = y + nb2draw * deltaHy;
+                        l.x2 = hxmin;
+                        l.y2 = y;
+                    }
+                    g2.setPaint(hatched.getColor());
+                    g2.setStroke(hatched.getStroke());
+                    g2.draw(l);
+                }
+            }
+        }
+        g2.setClip(null);
     }
 
     /**
